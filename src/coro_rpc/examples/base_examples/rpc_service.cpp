@@ -38,7 +38,7 @@ using namespace std::chrono_literals;
 
 std::string_view echo(std::string_view data) {
   ELOGV(INFO, "call echo");
-  return data;
+  return "hello";
 }
 
 void async_echo_by_callback(
