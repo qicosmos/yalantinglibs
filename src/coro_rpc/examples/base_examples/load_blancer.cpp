@@ -31,6 +31,7 @@
 #include <ylt/coro_io/coro_io.hpp>
 #include <ylt/coro_rpc/coro_rpc_client.hpp>
 
+#include "cmdline.h"
 #include "ylt/coro_io/io_context_pool.hpp"
 #include "ylt/coro_rpc/impl/coro_rpc_client.hpp"
 #include "ylt/coro_rpc/impl/errno.h"
@@ -45,7 +46,9 @@ std::atomic<uint64_t> qps = 0;
 
 std::atomic<uint64_t> working_echo = 0;
 
-int request_cnt = 10000;
+size_t request_cnt = 10000;
+std::string g_str;
+std::string_view g_send_data;
 
 Lazy<std::vector<std::chrono::microseconds>> call_echo(
     std::shared_ptr<coro_io::load_blancer<coro_rpc_client>> load_blancer) {
@@ -53,19 +56,14 @@ Lazy<std::vector<std::chrono::microseconds>> call_echo(
   result.reserve(request_cnt);
   auto tp = std::chrono::steady_clock::now();
   ++working_echo;
-  for (int i = 0; i < request_cnt; ++i) {
+  for (size_t i = 0; i < request_cnt; ++i) {
     auto res = co_await load_blancer->send_request(
         [](coro_rpc_client &client, std::string_view hostname) -> Lazy<void> {
-          auto res = co_await client.call<echo>("Hello world!");
+          auto res = co_await client.call<echo>(g_send_data);
           if (!res.has_value()) {
             ELOG_ERROR << "coro_rpc err: \n" << res.error().msg;
             co_return;
           }
-          if (res.value() != "Hello world!"sv) {
-            ELOG_ERROR << "err echo resp: \n" << res.value();
-            co_return;
-          }
-          co_return;
         });
     if (!res) {
       ELOG_ERROR << "client pool err: connect failed.\n";
@@ -86,11 +84,7 @@ Lazy<void> qps_watcher() {
   while (working_echo > 0) {
     co_await coro_io::sleep_for(1s);
     uint64_t cnt = qps.exchange(0);
-    std::cout << "QPS:" << cnt << " working echo:" << working_echo << std::endl;
-    std::cout << "free client for localhost: "
-              << (clients["localhost:8801"])->free_client_count() << std::endl;
-    std::cout << "free client for 127.0.0.1: "
-              << (clients["127.0.0.1:8801"])->free_client_count() << std::endl;
+    std::cout << "QPS:" << cnt << " working echo:" << working_echo << "\n";
     cnt = 0;
   }
 }
@@ -108,10 +102,38 @@ void latency_watcher() {
   }
 }
 
-int main() {
-  auto hosts =
-      std::vector<std::string_view>{"127.0.0.1:8801", "localhost:8801"};
-  auto worker_cnt = std::thread::hardware_concurrency() * 20;
+int main(int argc, char **argv) {
+  easylog::set_min_severity(easylog::Severity::WARNING);
+  cmdline::parser parser;
+
+  parser.add<std::string>("url", 'u', "url", false, "0.0.0.0:8090");
+  parser.add<size_t>("data_len", 'l', "data length", false, 0);
+  parser.add<uint32_t>("client_concurrency", 'c',
+                       "total number of http clients", false, 0);
+  parser.add<size_t>("max_request_count", 'm', "max request count", false,
+                     10000000);
+
+  parser.parse_check(argc, argv);
+
+  std::string url = parser.get<std::string>("url");
+  auto data_len = parser.get<size_t>("data_len");
+  uint32_t worker_cnt = parser.get<uint32_t>("client_concurrency");
+  request_cnt = parser.get<size_t>("max_request_count");
+
+  if (data_len == 0) {
+    std::cout << parser.usage() << std::endl;
+    return 1;
+  }
+
+  g_str = std::string(data_len, 'A');
+  g_send_data = g_str;
+
+  std::cout << "url: " << url << ", "
+            << "client concurrency: " << worker_cnt << ", "
+            << "data_len: " << data_len << ", "
+            << "max_request_count: " << request_cnt << ", " << std::endl;
+
+  auto hosts = std::vector<std::string_view>{url};
   auto chan = coro_io::load_blancer<coro_rpc_client>::create(
       hosts, {.pool_config{.max_connection = worker_cnt}});
   auto chan_ptr = std::make_shared<decltype(chan)>(std::move(chan));

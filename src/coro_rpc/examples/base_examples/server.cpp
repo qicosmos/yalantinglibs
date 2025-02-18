@@ -15,16 +15,31 @@
  */
 #include <ylt/coro_rpc/coro_rpc_server.hpp>
 
+#include "cmdline.h"
 #include "rpc_service.h"
 using namespace coro_rpc;
 using namespace async_simple;
 using namespace async_simple::coro;
-int main() {
+int main(int argc, char** argv) {
+  easylog::set_min_severity(easylog::Severity::WARNING);
+  cmdline::parser parser;
+  parser.add<uint32_t>("thd_num", 't', "server thread number", false,
+                       std::thread::hardware_concurrency());
+  parser.add<unsigned short>("port", 'p', "server port", false, 8090);
+
+  parser.parse_check(argc, argv);
+
+  auto thd_num = parser.get<uint32_t>("thd_num");
+  auto port = parser.get<unsigned short>("port");
+
+  std::cout << "thd_num: " << thd_num << ", "
+            << "port: " << port << std::endl;
+
   // init rpc server
   coro_rpc_server server(/*thread=*/std::thread::hardware_concurrency(),
                          /*port=*/8801);
 
-  coro_rpc_server server2{/*thread=*/1, /*port=*/8802};
+  coro_rpc_server server2{/*thread=*/thd_num, /*port=*/port};
 
   // regist normal function for rpc
   server.register_handler<echo, async_echo_by_coroutine, async_echo_by_callback,
