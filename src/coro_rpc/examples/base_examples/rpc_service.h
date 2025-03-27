@@ -176,6 +176,7 @@ inline int resources_create(resources *res) {
   qp_init_attr.cap.max_recv_wr = 10;
   qp_init_attr.cap.max_send_sge = 1;
   qp_init_attr.cap.max_recv_sge = 1;
+  qp_init_attr.cap.max_inline_data = 256;
 
   res->qp = ibv_create_qp(res->pd, &qp_init_attr);
   assert(res->qp != NULL);
@@ -354,11 +355,11 @@ inline int post_send(resources *res, ibv_wr_opcode opcode,
   // prepare the scatter / gather entry
   memset(&sge, 0, sizeof(sge));
 
-  strcpy(res->buf, msg.data());
+  // strcpy(res->buf, msg.data());
 
-  sge.addr = (uintptr_t)res->buf;
+  sge.addr = (uintptr_t)msg.data();
   sge.length = msg.size();
-  sge.lkey = res->mr->lkey;
+  sge.lkey = 0;
 
   // prepare the send work request
   memset(&sr, 0, sizeof(sr));
@@ -369,7 +370,7 @@ inline int post_send(resources *res, ibv_wr_opcode opcode,
 
   sr.num_sge = 1;
   sr.opcode = opcode;
-  sr.send_flags = IBV_SEND_SIGNALED;
+  sr.send_flags = IBV_SEND_SIGNALED | IBV_SEND_INLINE;
 
   if (opcode != IBV_WR_SEND) {
     sr.wr.rdma.remote_addr = res->remote_props.addr;
