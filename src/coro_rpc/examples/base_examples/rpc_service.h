@@ -385,18 +385,6 @@ inline async_simple::coro::Lazy<int> post_receive_coro(resources *res) {
 }
 
 inline int connect_qp(resources *res, const cm_con_data_t &peer_con_data) {
-  struct cm_con_data_t local_con_data;
-  char temp_char;
-  union ibv_gid my_gid;
-
-  memset(&my_gid, 0, sizeof(my_gid));
-
-  if (config.gid_idx >= 0) {
-    CHECK(ibv_query_gid(res->ib_ctx, config.ib_port, config.gid_idx, &my_gid));
-  }
-
-  // \end exchange required info
-
   ELOGV(INFO, "Remote address = 0x%x", peer_con_data.addr);
   ELOGV(INFO, "Remote rkey = %d", peer_con_data.rkey);
   ELOGV(INFO, "Remote QP number = %d", peer_con_data.qp_num);
