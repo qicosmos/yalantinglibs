@@ -116,7 +116,7 @@ Lazy<void> show_rpc_call() {
     //     post_receive_coro(res), post_send_coro(res, IBV_WR_SEND, msg),
     //     close_lz()); // for timeout test
     auto [rr, sr] = co_await async_simple::coro::collectAll(
-        post_receive_coro(res), post_send_coro(res, IBV_WR_SEND, msg));
+        post_receive_coro(res), post_send_coro(res, msg));
     if (rr.value() || sr.value()) {
       ELOG_ERROR << "rdma send recv error";
       break;

@@ -295,8 +295,7 @@ static int modify_qp_to_rts(struct ibv_qp *qp) {
 }
 
 // This function will create and post a send work request.
-inline int post_send(resources *res, ibv_wr_opcode opcode, std::string_view msg,
-                     uint64_t id) {
+inline int post_send(resources *res, std::string_view msg, uint64_t id) {
   struct ibv_send_wr sr;
   struct ibv_sge sge;
   struct ibv_send_wr *bad_wr = NULL;
@@ -320,27 +319,14 @@ inline int post_send(resources *res, ibv_wr_opcode opcode, std::string_view msg,
   sr.sg_list = &sge;
 
   sr.num_sge = 1;
-  sr.opcode = opcode;
+  sr.opcode = IBV_WR_SEND;
   sr.send_flags = IBV_SEND_SIGNALED;
 
   // there is a receive request in the responder side, so we won't get any
   // into RNR flow
   CHECK(ibv_post_send(res->qp, &sr, &bad_wr));
 
-  switch (opcode) {
-    case IBV_WR_SEND:
-      ELOGV(INFO, "Send request was posted");
-      break;
-    case IBV_WR_RDMA_READ:
-      ELOGV(INFO, "RDMA read request was posted");
-      break;
-    case IBV_WR_RDMA_WRITE:
-      ELOGV(INFO, "RDMA write request was posted");
-      break;
-    default:
-      ELOGV(INFO, "Unknown request was posted");
-      break;
-  }
+  ELOGV(INFO, "Send request was posted");
 
   return 0;
 }
@@ -421,11 +407,10 @@ inline void resume(T arg, uint64_t handle) {
 }
 
 inline async_simple::coro::Lazy<int> post_send_coro(resources *res,
-                                                    ibv_wr_opcode opcode,
                                                     std::string_view msg) {
   coro_io::callback_awaitor<int> awaitor;
   auto ec = co_await awaitor.await_resume([=](auto handler) {
-    int r = post_send(res, opcode, msg, (uint64_t)handler.handle_ptr());
+    int r = post_send(res, msg, (uint64_t)handler.handle_ptr());
     if (r != 0) {
       handler.set_value_then_resume(r);
     }
@@ -536,7 +521,7 @@ struct rdma_service_t {
       msg.append(std::to_string(index++));
       auto [rr, sr] = co_await async_simple::coro::collectAll(
           post_receive_coro(res),
-          post_send_coro(res, IBV_WR_SEND, std::string_view(res->buf)));
+          post_send_coro(res, std::string_view(res->buf)));
       if (rr.value() || sr.value()) {
         ELOG_ERROR << "rdma send recv error";
         break;
