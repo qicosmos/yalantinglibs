@@ -67,8 +67,8 @@ Lazy<void> show_rpc_call() {
 
   auto rdma_ret = co_await client.call_for<&rdma_service_t::get_con_data>(
       std::chrono::seconds(3600), local_data);
-  g_remote_con_data = rdma_ret.value();
-  connect_qp(res);
+  // g_remote_con_data = rdma_ret.value();
+  connect_qp(res, rdma_ret.value());
 
   async_simple::Promise<void> promise;
   auto on_response = [res, &cq_fd,
@@ -115,7 +115,7 @@ Lazy<void> show_rpc_call() {
     // auto [rr, sr, cr] = co_await async_simple::coro::collectAll(
     //     post_receive_coro(res), post_send_coro(res, IBV_WR_SEND, msg),
     //     close_lz()); // for timeout test
-    auto [rr, sr, cr] = co_await async_simple::coro::collectAll(
+    auto [rr, sr] = co_await async_simple::coro::collectAll(
         post_receive_coro(res), post_send_coro(res, IBV_WR_SEND, msg));
     if (rr.value() || sr.value()) {
       ELOG_ERROR << "rdma send recv error";

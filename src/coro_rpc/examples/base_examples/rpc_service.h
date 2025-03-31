@@ -37,6 +37,7 @@ struct cm_con_data_t {
 };
 
 struct resources {
+  ibv_device **dev_list;
   struct ibv_device_attr device_attr;  // device attributes
   struct ibv_port_attr port_attr;      // IB port attributes
   struct cm_con_data_t remote_props;   // values to connect to remote side
@@ -71,6 +72,40 @@ struct config_t {
 inline config_t config{};
 inline size_t g_buf_size = 256;
 
+inline auto create_qp(ibv_pd *pd, ibv_cq *cq) {
+  struct ibv_qp_init_attr qp_init_attr;
+  memset(&qp_init_attr, 0, sizeof(qp_init_attr));
+  qp_init_attr.qp_type = IBV_QPT_RC;
+  qp_init_attr.sq_sig_all = 1;
+  qp_init_attr.send_cq = cq;
+  qp_init_attr.recv_cq = cq;
+  qp_init_attr.cap.max_send_wr = 10;
+  qp_init_attr.cap.max_recv_wr = 10;
+  qp_init_attr.cap.max_send_sge = 1;
+  qp_init_attr.cap.max_recv_sge = 1;
+
+  auto qp = ibv_create_qp(pd, &qp_init_attr);
+  assert(qp != NULL);
+
+  ELOGV(INFO, "QP was created, QP number= %d", qp->qp_num);  
+  return qp;
+}
+
+inline auto create_mr(ibv_pd *pd) {
+  auto buf = (char *)calloc(1, g_buf_size);
+  assert(buf != NULL);
+
+  // register the memory buffer
+  int mr_flags =
+      IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
+  auto mr = ibv_reg_mr(pd, buf, g_buf_size, mr_flags);
+  assert(mr != NULL);
+
+  ELOGV(INFO, "MR was registered with addr=%p, lkey= %d, rkey= %d, flags= %d",
+        buf, mr->lkey, mr->rkey, mr_flags);
+  return mr;
+}
+
 inline int resources_create(resources *res) {
   struct ibv_device **dev_list = NULL;
   struct ibv_qp_init_attr qp_init_attr;
@@ -88,6 +123,7 @@ inline int resources_create(resources *res) {
   // get device names in the system
   dev_list = ibv_get_device_list(&num_devices);
   assert(dev_list != NULL);
+  res->dev_list = dev_list;
 
   if (num_devices == 0) {
     ELOGV(ERROR, "Found %d device(s)", num_devices);
@@ -158,31 +194,13 @@ inline int resources_create(resources *res) {
   assert(r >= 0);
 
   // a buffer to hold the data
-  size = g_buf_size;
-  res->buf = (char *)calloc(1, g_buf_size);
-  assert(res->buf != NULL);
-
-  // register the memory buffer
-  mr_flags =
-      IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
-  res->mr = ibv_reg_mr(res->pd, res->buf, size, mr_flags);
-  assert(res->mr != NULL);
-
-  ELOGV(INFO, "MR was registered with addr=%p, lkey= %d, rkey= %d, flags= %d",
-        res->buf, res->mr->lkey, res->mr->rkey, mr_flags);
+  auto mr = create_mr(res->pd);
+  auto mr1 = create_mr(res->pd);
+  res->mr = mr;
+  res->buf = (char*)mr->addr;
 
   // \begin create the QP
-  memset(&qp_init_attr, 0, sizeof(qp_init_attr));
-  qp_init_attr.qp_type = IBV_QPT_RC;
-  qp_init_attr.sq_sig_all = 1;
-  qp_init_attr.send_cq = res->cq;
-  qp_init_attr.recv_cq = res->cq;
-  qp_init_attr.cap.max_send_wr = 10;
-  qp_init_attr.cap.max_recv_wr = 10;
-  qp_init_attr.cap.max_send_sge = 1;
-  qp_init_attr.cap.max_recv_sge = 1;
-
-  res->qp = ibv_create_qp(res->pd, &qp_init_attr);
+  res->qp = create_qp(res->pd, res->cq);//ibv_create_qp(res->pd, &qp_init_attr);
   assert(res->qp != NULL);
 
   ELOGV(INFO, "QP was created, QP number= %d", res->qp->qp_num);
@@ -277,91 +295,6 @@ static int modify_qp_to_rts(struct ibv_qp *qp) {
   return 0;
 }
 
-inline int post_receive(resources *res, uint64_t wr_id) {
-  struct ibv_recv_wr rr;
-  struct ibv_sge sge;
-  struct ibv_recv_wr *bad_wr = nullptr;
-
-  // prepare the scatter / gather entry
-  memset(&sge, 0, sizeof(sge));
-  sge.addr = (uintptr_t)res->buf;
-  sge.length = g_buf_size;
-  sge.lkey = res->mr->lkey;
-
-  // prepare the receive work request
-  memset(&rr, 0, sizeof(rr));
-
-  res->recv_id = wr_id;
-  rr.next = NULL;
-  rr.wr_id = wr_id;
-  rr.sg_list = &sge;
-  rr.num_sge = 1;
-
-  // post the receive request to the RQ
-  CHECK(ibv_post_recv(res->qp, &rr, &bad_wr));
-  ELOGV(INFO, "Receive request was posted");
-
-  return 0;
-}
-
-inline async_simple::coro::Lazy<int> post_receive_coro(resources *res) {
-  coro_io::callback_awaitor<int> awaitor;
-  auto ec = co_await awaitor.await_resume([=](auto handler) {
-    int r = post_receive(res, (uint64_t)handler.handle_ptr());
-    if (r != 0) {
-      handler.set_value_then_resume(r);
-    }
-  });
-  ELOG_INFO << "recv response: " << std::string_view(res->buf);
-  co_return ec;
-}
-
-inline cm_con_data_t g_remote_con_data{};
-
-inline int connect_qp(resources *res) {
-  struct cm_con_data_t local_con_data;
-  char temp_char;
-  union ibv_gid my_gid;
-
-  memset(&my_gid, 0, sizeof(my_gid));
-
-  if (config.gid_idx >= 0) {
-    CHECK(ibv_query_gid(res->ib_ctx, config.ib_port, config.gid_idx, &my_gid));
-  }
-
-  // save the remote side attributes, we will need it for the post SR
-  res->remote_props = g_remote_con_data;
-  memcpy(res->remote_props.gid, g_remote_con_data.gid, 16);
-  // \end exchange required info
-
-  ELOGV(INFO, "Remote address = 0x%x", g_remote_con_data.addr);
-  ELOGV(INFO, "Remote rkey = %d", g_remote_con_data.rkey);
-  ELOGV(INFO, "Remote QP number = %d", g_remote_con_data.qp_num);
-  ELOGV(INFO, "Remote LID = %d", g_remote_con_data.lid);
-
-  if (config.gid_idx >= 0) {
-    uint8_t *p = g_remote_con_data.gid;
-    int i;
-    printf("Remote GID = ");
-    for (i = 0; i < 15; i++) printf("%02x:", p[i]);
-    printf("%02x\n", p[15]);
-  }
-
-  // modify the QP to init
-  modify_qp_to_init(res->qp);
-
-  // post_receive(res);
-
-  // modify the QP to RTR
-  modify_qp_to_rtr(res->qp, g_remote_con_data.qp_num, g_remote_con_data.lid,
-                   g_remote_con_data.gid);
-
-  // modify QP state to RTS
-  modify_qp_to_rts(res->qp);
-
-  return 0;
-}
-
 // This function will create and post a send work request.
 inline int post_send(resources *res, ibv_wr_opcode opcode, std::string_view msg,
                      uint64_t id) {
@@ -414,6 +347,89 @@ inline int post_send(resources *res, ibv_wr_opcode opcode, std::string_view msg,
       ELOGV(INFO, "Unknown request was posted");
       break;
   }
+
+  return 0;
+}
+
+inline int post_receive(resources *res, uint64_t wr_id) {
+  struct ibv_recv_wr rr;
+  struct ibv_sge sge;
+  struct ibv_recv_wr *bad_wr = nullptr;
+
+  // prepare the scatter / gather entry
+  memset(&sge, 0, sizeof(sge));
+  sge.addr = (uintptr_t)res->buf;
+  sge.length = g_buf_size;
+  sge.lkey = res->mr->lkey;
+
+  // prepare the receive work request
+  memset(&rr, 0, sizeof(rr));
+
+  res->recv_id = wr_id;
+  rr.next = NULL;
+  rr.wr_id = wr_id;
+  rr.sg_list = &sge;
+  rr.num_sge = 1;
+
+  // post the receive request to the RQ
+  CHECK(ibv_post_recv(res->qp, &rr, &bad_wr));
+  ELOGV(INFO, "Receive request was posted");
+
+  return 0;
+}
+
+inline async_simple::coro::Lazy<int> post_receive_coro(resources *res) {
+  coro_io::callback_awaitor<int> awaitor;
+  auto ec = co_await awaitor.await_resume([=](auto handler) {
+    int r = post_receive(res, (uint64_t)handler.handle_ptr());
+    if (r != 0) {
+      handler.set_value_then_resume(r);
+    }
+  });
+  ELOG_INFO << "recv response: " << std::string_view(res->buf);
+  co_return ec;
+}
+
+inline int connect_qp(resources *res, const cm_con_data_t& peer_con_data) {
+  struct cm_con_data_t local_con_data;
+  char temp_char;
+  union ibv_gid my_gid;
+
+  memset(&my_gid, 0, sizeof(my_gid));
+
+  if (config.gid_idx >= 0) {
+    CHECK(ibv_query_gid(res->ib_ctx, config.ib_port, config.gid_idx, &my_gid));
+  }
+
+  // save the remote side attributes, we will need it for the post SR
+  res->remote_props = peer_con_data;
+  memcpy(res->remote_props.gid, peer_con_data.gid, 16);
+  // \end exchange required info
+
+  ELOGV(INFO, "Remote address = 0x%x", peer_con_data.addr);
+  ELOGV(INFO, "Remote rkey = %d", peer_con_data.rkey);
+  ELOGV(INFO, "Remote QP number = %d", peer_con_data.qp_num);
+  ELOGV(INFO, "Remote LID = %d", peer_con_data.lid);
+
+  if (config.gid_idx >= 0) {
+    uint8_t *p = (uint8_t *)peer_con_data.gid;
+    int i;
+    printf("Remote GID = ");
+    for (i = 0; i < 15; i++) printf("%02x:", p[i]);
+    printf("%02x\n", p[15]);
+  }
+
+  // modify the QP to init
+  modify_qp_to_init(res->qp);
+
+  // post_receive(res);
+
+  // modify the QP to RTR
+  modify_qp_to_rtr(res->qp, peer_con_data.qp_num, peer_con_data.lid,
+                   (uint8_t*)peer_con_data.gid);
+
+  // modify QP state to RTS
+  modify_qp_to_rts(res->qp);
 
   return 0;
 }
@@ -483,6 +499,7 @@ inline int resources_destroy(struct resources *res) {
   ibv_destroy_comp_channel(res->complete_event_channel);
   ibv_dealloc_pd(res->pd);
   ibv_close_device(res->ib_ctx);
+  ibv_free_device_list(res->dev_list);
 
   return 0;
 }
@@ -494,19 +511,7 @@ struct rdma_service_t {
   union ibv_gid my_gid;
   std::atomic<int> count = 0;
 
-  cm_con_data_t get_con_data(cm_con_data_t peer) {
-    cm_con_data_t server_data{};
-    server_data.addr = (uintptr_t)res->buf;
-    server_data.rkey = res->mr->rkey;
-    server_data.qp_num = res->qp->qp_num;
-    server_data.lid = res->port_attr.lid;
-    memcpy(server_data.gid, &my_gid, 16);
-
-    g_remote_con_data = peer;
-    memcpy(g_remote_con_data.gid, peer.gid, 16);
-
-    connect_qp(res);
-    // post_receive_coro(res).start([](auto&&){});
+  void init() {
     auto on_recv = [this]() -> async_simple::coro::Lazy<void> {
       while (true) {
         coro_io::callback_awaitor<std::error_code> awaitor;
@@ -520,7 +525,18 @@ struct rdma_service_t {
       }
     };
     on_recv().start([](auto &&) {
-    });
+    });    
+  }
+
+  cm_con_data_t get_con_data(cm_con_data_t peer) {
+    cm_con_data_t server_data{};
+    server_data.addr = (uintptr_t)res->buf;
+    server_data.rkey = res->mr->rkey;
+    server_data.qp_num = res->qp->qp_num;
+    server_data.lid = res->port_attr.lid;
+    memcpy(server_data.gid, &my_gid, 16);
+
+    connect_qp(res, peer);
 
     start().start([](auto &&) {
     });
@@ -530,6 +546,9 @@ struct rdma_service_t {
 
   async_simple::coro::Lazy<void> start() {
     int index = 0;
+    auto qp = create_qp(res->pd, res->cq);
+    auto mr = create_mr(res->pd);
+    
     co_await post_receive_coro(res);
     while (true) {
       ELOG_INFO << "get request data: " << std::string_view(res->buf);
@@ -540,6 +559,7 @@ struct rdma_service_t {
           post_receive_coro(res),
           post_send_coro(res, IBV_WR_SEND, std::string_view(res->buf)));
     }
+    //free qp and mr
   }
 };
 /*-------------- rdma ---------------*/
