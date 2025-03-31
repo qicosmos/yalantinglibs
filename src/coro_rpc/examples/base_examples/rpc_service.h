@@ -40,7 +40,6 @@ struct resources {
   ibv_device **dev_list;
   struct ibv_device_attr device_attr;  // device attributes
   struct ibv_port_attr port_attr;      // IB port attributes
-  struct cm_con_data_t remote_props;   // values to connect to remote side
   struct ibv_context *ib_ctx;          // device handle
   struct ibv_pd *pd;                   // PD handle
   struct ibv_comp_channel *complete_event_channel;
@@ -87,7 +86,7 @@ inline auto create_qp(ibv_pd *pd, ibv_cq *cq) {
   auto qp = ibv_create_qp(pd, &qp_init_attr);
   assert(qp != NULL);
 
-  ELOGV(INFO, "QP was created, QP number= %d", qp->qp_num);  
+  ELOGV(INFO, "QP was created, QP number= %d", qp->qp_num);
   return qp;
 }
 
@@ -195,12 +194,12 @@ inline int resources_create(resources *res) {
 
   // a buffer to hold the data
   auto mr = create_mr(res->pd);
-  auto mr1 = create_mr(res->pd);
   res->mr = mr;
-  res->buf = (char*)mr->addr;
+  res->buf = (char *)mr->addr;
 
   // \begin create the QP
-  res->qp = create_qp(res->pd, res->cq);//ibv_create_qp(res->pd, &qp_init_attr);
+  res->qp =
+      create_qp(res->pd, res->cq);  // ibv_create_qp(res->pd, &qp_init_attr);
   assert(res->qp != NULL);
 
   ELOGV(INFO, "QP was created, QP number= %d", res->qp->qp_num);
@@ -324,11 +323,6 @@ inline int post_send(resources *res, ibv_wr_opcode opcode, std::string_view msg,
   sr.opcode = opcode;
   sr.send_flags = IBV_SEND_SIGNALED;
 
-  if (opcode != IBV_WR_SEND) {
-    sr.wr.rdma.remote_addr = res->remote_props.addr;
-    sr.wr.rdma.rkey = res->remote_props.rkey;
-  }
-
   // there is a receive request in the responder side, so we won't get any
   // into RNR flow
   CHECK(ibv_post_send(res->qp, &sr, &bad_wr));
@@ -390,7 +384,7 @@ inline async_simple::coro::Lazy<int> post_receive_coro(resources *res) {
   co_return ec;
 }
 
-inline int connect_qp(resources *res, const cm_con_data_t& peer_con_data) {
+inline int connect_qp(resources *res, const cm_con_data_t &peer_con_data) {
   struct cm_con_data_t local_con_data;
   char temp_char;
   union ibv_gid my_gid;
@@ -401,9 +395,6 @@ inline int connect_qp(resources *res, const cm_con_data_t& peer_con_data) {
     CHECK(ibv_query_gid(res->ib_ctx, config.ib_port, config.gid_idx, &my_gid));
   }
 
-  // save the remote side attributes, we will need it for the post SR
-  res->remote_props = peer_con_data;
-  memcpy(res->remote_props.gid, peer_con_data.gid, 16);
   // \end exchange required info
 
   ELOGV(INFO, "Remote address = 0x%x", peer_con_data.addr);
@@ -426,7 +417,7 @@ inline int connect_qp(resources *res, const cm_con_data_t& peer_con_data) {
 
   // modify the QP to RTR
   modify_qp_to_rtr(res->qp, peer_con_data.qp_num, peer_con_data.lid,
-                   (uint8_t*)peer_con_data.gid);
+                   (uint8_t *)peer_con_data.gid);
 
   // modify QP state to RTS
   modify_qp_to_rts(res->qp);
@@ -525,7 +516,7 @@ struct rdma_service_t {
       }
     };
     on_recv().start([](auto &&) {
-    });    
+    });
   }
 
   cm_con_data_t get_con_data(cm_con_data_t peer) {
@@ -548,18 +539,24 @@ struct rdma_service_t {
     int index = 0;
     auto qp = create_qp(res->pd, res->cq);
     auto mr = create_mr(res->pd);
-    
+
     co_await post_receive_coro(res);
     while (true) {
       ELOG_INFO << "get request data: " << std::string_view(res->buf);
       // std::this_thread::sleep_for(std::chrono::seconds(1000)); //test timeout
       std::string msg = "hello rdma from server ";
       msg.append(std::to_string(index++));
-      co_await async_simple::coro::collectAll(
+      auto [rr, sr] = co_await async_simple::coro::collectAll(
           post_receive_coro(res),
           post_send_coro(res, IBV_WR_SEND, std::string_view(res->buf)));
+      if (rr.value() || sr.value()) {
+        ELOG_ERROR << "rdma send recv error";
+        break;
+      }
     }
-    //free qp and mr
+    // free qp and mr
+    ibv_destroy_qp(res->qp);
+    ibv_dereg_mr(res->mr);
   }
 };
 /*-------------- rdma ---------------*/
