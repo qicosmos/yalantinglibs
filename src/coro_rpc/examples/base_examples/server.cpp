@@ -40,7 +40,6 @@ int main() {
   assert(r >= 0);
 
   memset(&service.my_gid, 0, sizeof(service.my_gid));
-  service.init();
 
   if (config.gid_idx >= 0) {
     CHECK(ibv_query_gid(res.ib_ctx, config.ib_port, config.gid_idx,
