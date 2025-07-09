@@ -32,6 +32,15 @@ class caller {
   py::function callback_;
 };
 
+void* create_resource() {
+    return new int(42);  // 示例资源
+}
+
+void free_resource(void* ptr) {
+  std::cout << "delete ptr\n";
+  delete (char*)ptr;
+}
+
 PYBIND11_MODULE(py_example, m) {
   m.def("hello", [] {
     return std::string("hello");
@@ -41,4 +50,16 @@ PYBIND11_MODULE(py_example, m) {
       .def(py::init<py::function>())
       .def("async_get", &caller::async_get,
            py::call_guard<py::gil_scoped_release>());
+
+    m.def("create_capsule", []() {
+        void* resource = create_resource();
+        // 创建 capsule 并附加析构函数
+        return py::capsule(resource, free_resource);
+    });
+    
+    m.def("use_capsule", [](py::capsule cap) {
+        void* ptr = cap;  // 获取原始指针
+        int value = *static_cast<int*>(ptr);
+        return value;
+    });
 }

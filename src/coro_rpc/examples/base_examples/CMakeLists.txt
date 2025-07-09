@@ -36,7 +36,7 @@ else()
   endif()
 endif()
 
-option(ENABLE_go "Enable go " OFF)
+option(ENABLE_go "Enable go " ON)
 if(ENABLE_go)
   add_library(coro_rpc coro_rpc_lib/coro_rpc.cpp)
   set_target_properties(coro_rpc PROPERTIES

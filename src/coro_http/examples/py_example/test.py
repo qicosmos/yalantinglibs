@@ -19,4 +19,6 @@ async def main():
     await async_get("http://taobao.com")
 
 if __name__ == "__main__":
+    cap = py_example.create_capsule()
+    print(py_example.use_capsule(cap))
     asyncio.run(main())

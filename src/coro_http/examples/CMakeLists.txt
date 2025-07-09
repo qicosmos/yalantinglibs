@@ -37,7 +37,7 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_SYSTEM_NAME MATCHES "Windows"
     target_link_libraries(coro_chat_room wsock32 ws2_32)
 endif()
 
-option(ENABLE_pybind11 "Enable pybind11 " OFF)
+option(ENABLE_pybind11 "Enable pybind11 " ON)
 if(ENABLE_pybind11)
   cmake_minimum_required(VERSION 3.14)
   project(MyPybind11Project)

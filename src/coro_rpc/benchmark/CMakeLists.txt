@@ -24,3 +24,12 @@ if (GENERATE_BENCHMARK_DATA)
             VERBATIM
     )
 endif ()
+
+add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=0)
+include_directories(/root/coro_rpc_test/libtorch/include)
+include_directories(/root/coro_rpc_test/libtorch/include/torch/csrc/api/include)
+link_directories(/root/coro_rpc_test/libtorch/lib)
+
+add_executable(example example.cpp)
+
+target_link_libraries(example c10 torch torch_cpu torch_cuda)

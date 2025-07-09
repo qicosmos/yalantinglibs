@@ -45,3 +45,5 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_SYSTEM_NAME MATCHES "Windows"
   target_link_libraries(coro_rpc_regist_test_2 wsock32 ws2_32)
   target_link_libraries(coro_rpc_regist_test_3 wsock32 ws2_32)
 endif()
+
+add_executable(test_rpc_lib ../examples/base_examples/coro_rpc_lib/coro_rpc.cpp test_rpc_lib.cpp)
